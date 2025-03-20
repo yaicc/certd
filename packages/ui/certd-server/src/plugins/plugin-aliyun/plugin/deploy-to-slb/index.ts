@@ -74,6 +74,18 @@ export class AliyunDeployCertToSLB extends AbstractTaskPlugin {
   )
   listeners!: string[];
 
+  @TaskInput(
+    createRemoteSelectInputDefine({
+      title: '扩展域名列表',
+      helper: '要部署证书的扩展域名列表，不选此项则绑定证书到监听器',
+      typeName: 'AliyunDeployCertToSLB',
+      action: AliyunDeployCertToSLB.prototype.onGetDomainList.name,
+      watches: ['listeners'],
+      required: false
+    })
+  )
+  extDomains!: string[];
+
   @TaskInput({
     title: '证书接入点',
     helper: '不会选就保持默认即可',
@@ -112,20 +124,35 @@ export class AliyunDeployCertToSLB extends AbstractTaskPlugin {
     const client = await this.getLBClient(access, this.regionId);
     const aliyunCert = await this.getAliyunCertId(access);
     const slbServerCertId = await this.uploadServerCert(client, aliyunCert);
-    for (const listener of this.listeners) {
-      const arr = listener.split('_');
-      const loadBalanceId = arr[0];
-      const port = arr[2];
-      const params = {
-        RegionId: this.regionId,
-        LoadBalancerId: loadBalanceId,
-        ListenerPort: parseInt(port),
-        ServerCertificateId: slbServerCertId,
-      };
 
-      const res = await client.request('SetLoadBalancerHTTPSListenerAttribute', params);
-      this.checkRet(res);
-      this.logger.info(`部署${listener}监听器证书成功`, JSON.stringify(res));
+    if (this.extDomains && this.extDomains.length > 0) {
+      for (const domain of this.extDomains) {
+        const params = {
+          RegionId: this.regionId,
+          DomainExtensionId: domain,
+          ServerCertificateId: slbServerCertId,
+        };
+
+        const res = await client.request('SetDomainExtensionAttribute', params);
+        this.checkRet(res);
+        this.logger.info(`部署${domain}扩展域名证书成功`, JSON.stringify(res));
+      }
+    } else {
+      for (const listener of this.listeners) {
+        const arr = listener.split('_');
+        const loadBalanceId = arr[0];
+        const port = arr[2];
+        const params = {
+          RegionId: this.regionId,
+          LoadBalancerId: loadBalanceId,
+          ListenerPort: parseInt(port),
+          ServerCertificateId: slbServerCertId,
+        };
+
+        const res = await client.request('SetLoadBalancerHTTPSListenerAttribute', params);
+        this.checkRet(res);
+        this.logger.info(`部署${listener}监听器证书成功`, JSON.stringify(res));
+      }
     }
     this.logger.info('执行完成');
   }
@@ -246,6 +273,43 @@ export class AliyunDeployCertToSLB extends AbstractTaskPlugin {
         value: value,
       };
     });
+  }
+
+  async onGetDomainList(data: any) {
+    if (!this.accessId) {
+      throw new Error('请先选择Access授权');
+    }
+    if (!this.regionId) {
+      throw new Error('请先选择地区');
+    }
+    const access = await this.accessService.getById<AliyunAccess>(this.accessId);
+    const client = await this.getLBClient(access, this.regionId);
+
+    const domains: any[] = [];
+    for (const listener of this.listeners) {
+      const arr = listener.split('_');
+      const loadBalanceId = arr[0];
+      const port = arr[2];
+      const params: any = {
+        MaxResults: 100,
+        RegionId: this.regionId,
+        LoadBalancerId: loadBalanceId,
+        ListenerPort: parseInt(port),
+      };
+      const res = await client.request('DescribeDomainExtensions', params);
+      if (res.DomainExtensions && res.DomainExtensions.DomainExtension && res.DomainExtensions.DomainExtension.length > 0) {
+        domains.push(...res.DomainExtensions.DomainExtension.map((item: any) => {
+          const label = `${item.Domain}_${item.DomainExtensionId}`;
+          const value = `${item.DomainExtensionId}`;
+          return {
+            label: label,
+            value: value,
+          };
+        }));
+      }
+    }
+
+    return domains;
   }
 
   checkRet(ret: any) {
